@@ -40,6 +40,27 @@ log_success() { echo -e "${C_GREEN}[OK]${C_NC} $1"       | tee -a "$LOG_FILE"; }
 log_warning() { echo -e "${C_YELLOW}[WARNING]${C_NC} $1" | tee -a "$LOG_FILE"; }
 log_error()   { echo -e "${C_RED}[ERROR]${C_NC} $1"      | tee -a "$LOG_FILE" >&2; }
 
+ensure_tooling() {
+  if ! command -v gh >/dev/null 2>&1; then
+    log_error "GitHub CLI (gh) is not installed. See https://cli.github.com/"
+    exit 1
+  fi
+  log_info "gh version: $(gh --version | head -n 1)"
+}
+
+ensure_auth() {
+  if [[ -n "${GH_PAT:-}" && -z "${GH_TOKEN:-}" ]]; then
+    export GH_TOKEN="$GH_PAT"
+  fi
+  if ! gh auth status >/dev/null 2>&1; then
+    log_error "GitHub CLI not authenticated. Run: gh auth login (or set GH_TOKEN/GH_PAT)."
+    exit 1
+  fi
+}
+
+ensure_tooling
+ensure_auth
+
 if [[ -z "$BBS_BASE_URL" ]]; then
   log_error "BBS_BASE_URL is required (pass -b or export BBS_BASE_URL)."
   exit 1
@@ -267,42 +288,14 @@ strip_quotes() {
 
 # Validate header and build column index
 REQUIRED_COLUMNS=(project-key project-name repo github_org github_repo)
-IFS= read -r HEADER_LINE < "$CSV_PATH"
-
-# Remove CRLF and UTF-8 BOM from the header.
-HEADER_LINE="${HEADER_LINE%$'\r'}"
-HEADER_LINE="${HEADER_LINE#$'\xEF\xBB\xBF'}"
-
-mapfile -t HEADER_FIELDS < <(parse_csv_line "$HEADER_LINE")
-
+read -r HEADER_LINE < "$CSV_PATH"
+mapfile -t HEADER_FIELDS < <(parse_csv_line "${HEADER_LINE}")
 declare -A COLIDX=()
-
 for idx in "${!HEADER_FIELDS[@]}"; do
   name="${HEADER_FIELDS[$idx]}"
-
-  # Remove quotes, CR, BOM and surrounding whitespace.
-  name="${name%$'\r'}"
-  name="${name#$'\xEF\xBB\xBF'}"
-  name="${name#\"}"
-  name="${name%\"}"
-  name="${name#"${name%%[![:space:]]*}"}"
-  name="${name%"${name##*[![:space:]]}"}"
-
+  name="${name%\"}"; name="${name#\"}"
   COLIDX["$name"]="$idx"
 done
-
-missing_cols=()
-for col in "${REQUIRED_COLUMNS[@]}"; do
-  if [[ ! -v "COLIDX[$col]" ]]; then
-    missing_cols+=("$col")
-  fi
-done
-
-if (( ${#missing_cols[@]} > 0 )); then
-  echo "CSV header detected: $(printf '%s|' "${HEADER_FIELDS[@]}")" >&2
-  echo "Missing required column(s): ${missing_cols[*]}" >&2
-  exit 1
-fi
 missing_cols=()
 for col in "${REQUIRED_COLUMNS[@]}"; do
   [[ -n "${COLIDX[$col]:-}" ]] || missing_cols+=("$col")
